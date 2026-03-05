@@ -15,7 +15,7 @@ This repo is intended to be self-driving to get the user started with minimal fu
 
 Your first action is to read BOOTSTRAP.md to see if the necessary set up steps have been completed. The board comes pre-flashed with the starter project so WiFi flashing is available from the start — a USB data cable is optional. You are responsible for completing bootstrap steps on behalf of the user — including installing Arduino CLI if needed. Mark bootstrap complete below when fully set up. If marked complete, there is no need to read BOOTSTRAP.md
 
-[] Bootstrap complete
+[x] Bootstrap complete
 
 ## CLI Path
 

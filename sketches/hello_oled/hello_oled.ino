@@ -17,7 +17,7 @@ void setup() {
   u8g2.setContrast(30);
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB10_tr);
-  u8g2.drawStr(4, 20, "CFB");
+  u8g2.drawStr(4, 20, "Humn");
   u8g2.setFont(u8g2_font_6x10_tr);
   u8g2.drawStr(4, 36, "Welcome!");
   u8g2.sendBuffer();
