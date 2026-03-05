@@ -37,22 +37,22 @@ This file is for the agent. Work through each step silently. Keep the user infor
    ```
 
 [] Arduino CLI installed
+[] Updated CLI path in CLAUDE.md and AGENTS.md
 
 ---
 
 ## Step 2: Connect to the board
 
-The board is pre-flashed with the starter project. When powered on it connects to WiFi and shows its IP on the OLED.
+The default assumption is that the board is connected via USB-C data cable.
 
-**Path A — WiFi (no cable):**
-- Ask the user to power the board on and read the IP from the OLED
-- Ping the IP to confirm it's reachable
-- Store the IP for use in subsequent flashing
-
-**Path B — USB cable:**
+**Path A — USB cable (default):**
 - Run `arduino-cli board list` and confirm a port appears
 - Store the port for use in subsequent flashing
-- WiFi flashing is still preferred if available; use USB as fallback
+
+**Path B — WiFi (no cable):**
+- If no USB port is detected, ask the user to power the board on and read the IP from the OLED
+- Ping the IP to confirm it's reachable
+- Store the IP for use in subsequent flashing
 
 [] Board is reachable
 
@@ -60,9 +60,9 @@ The board is pre-flashed with the starter project. When powered on it connects t
 
 ## Step 3: Test flash
 
-- Compile and flash a minimal hello world sketch (OLED displays "Hello!")
-- Use WiFi OTA if IP is known, otherwise USB
-- Confirm the OLED updates
+- Compile and flash `sketches/hello_oled/hello_oled.ino`
+- Use USB port if detected, otherwise WiFi OTA
+- Confirm the OLED updates with the hello_oled output
 
 [] Test flash succeeded
 

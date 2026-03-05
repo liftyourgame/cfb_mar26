@@ -17,7 +17,30 @@ Your first action is to read BOOTSTRAP.md to see if the necessary set up steps h
 
 [] Bootstrap complete
 
-Arduino CLI Path: <add here>
+## CLI Path
+
+Arduino CLI Path: /opt/homebrew/bin/arduino-cli
+
+## FLASHING
+
+To get the correct FQBN, run `arduino-cli board list` and use the FQBN shown for the detected USB port.
+
+
+## SERIAL DEBUGGING
+
+Always include Serial debugging in every sketch you write:
+- Call `Serial.begin(115200)` followed by `delay(1500)` at the start of `setup()` to allow the USB-CDC connection to establish
+- Add `Serial.println()` statements at key points — boot confirmation, sensor readings, state changes, errors
+- When compiling/uploading a sketch that uses `Serial`, append `:CDCOnBoot=cdc` to the FQBN: `esp32:esp32:esp32c3:CDCOnBoot=cdc`
+
+This is required because the board has no separate USB-UART chip — `CDCOnBoot=cdc` routes `Serial` over the USB connection.
+
+## WORKSHOP WIFI
+
+Use these credentials whenever a sketch needs WiFi connectivity:
+
+- SSID: `cfb`
+- Password: `cfb_1958!`
 
 ## BOARD DETAILS
 
