@@ -9,7 +9,7 @@
 
 // ----- AP credentials -----
 const char* AP_SSID = "humn.au";
-const char* AP_PASS = "turner73";
+const char* AP_PASS = "LivingTheDream";
 
 // ----- Upstream WiFi (internet source) -----
 const char* STA_SSID = "Humanising Technologies";
@@ -303,7 +303,7 @@ void updateDisplay() {
   int clients = WiFi.softAPgetStationNum();
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB10_tr);
-  u8g2.drawStr(2, 14, "humn");
+  u8g2.drawStr(2, 14, "humn.au");
   u8g2.setFont(u8g2_font_6x10_tr);
   char buf[24];
   if (internetMode) {
