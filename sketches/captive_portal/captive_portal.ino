@@ -1,12 +1,11 @@
 #include <WiFi.h>
-#include <DNSServer.h>
+#include <WiFiUdp.h>
 #include <WebServer.h>
 #include <U8g2lib.h>
 #include <Wire.h>
 #include "lwip/lwip_napt.h"
 #include "lwip/tcpip.h"
 #include "esp_netif.h"
-#include "dhcpserver/dhcpserver.h"
 
 // ----- AP credentials -----
 const char* AP_SSID = "humn.au";
@@ -21,14 +20,26 @@ const char* STA_PASS = "turner73";
 U8G2_SSD1306_72X40_ER_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 6, 5);
 
 // ----- Servers -----
-DNSServer captiveDns;
 WebServer webServer(80);
-
 const IPAddress apIP(192, 168, 4, 1);
 
 // ----- State -----
 bool internetMode = false;
 bool staConnected = false;
+
+// ----- Unified DNS on port 53: captive replies OR upstream forwarding -----
+WiFiUDP dnsSocket;  // port 53 — never rebound
+WiFiUDP dnsOut;     // ephemeral — upstream forwarding only
+IPAddress upstreamDns;
+
+#define MAX_PENDING 4
+struct PendingQuery {
+  IPAddress clientIP;
+  uint16_t clientPort;
+  uint16_t txnId;
+  unsigned long sentAt;
+  bool active;
+} pending[MAX_PENDING];
 
 // ----- Display refresh -----
 unsigned long lastDisplayUpdate = 0;
@@ -103,7 +114,7 @@ const char SUCCESS_HTML[] PROGMEM = R"rawliteral(
     <div class="divider"></div>
     <p>Internet is now available.</p>
     <button class="ok" disabled>&#10003; Connected</button>
-    <div class="status green">Toggle WiFi off/on, then browse.</div>
+    <div class="status green">You can now browse the internet.</div>
   </div>
 </body>
 </html>
@@ -141,60 +152,158 @@ void handlePortal() {
   webServer.send(200, "text/html", buildPage(PORTAL_HTML));
 }
 
-void handleRedirect() {
-  webServer.sendHeader("Location", "http://192.168.4.1/", true);
-  webServer.send(302, "text/plain", "");
+void handleAppleDetect() {
+  if (internetMode) {
+    webServer.send(200, "text/html",
+      "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+  } else {
+    webServer.send(200, "text/html", buildPage(PORTAL_HTML));
+  }
 }
 
-// Called at boot after STA connects — configures NAPT and DHCP before clients join
-void setupNaptAndDhcp() {
-  esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-  esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+void handleAndroidDetect() {
+  if (internetMode) {
+    webServer.send(204, "", "");
+  } else {
+    webServer.sendHeader("Location", "http://192.168.4.1/", true);
+    webServer.send(302, "text/plain", "");
+  }
+}
 
+void handleWindowsDetect() {
+  if (internetMode) {
+    webServer.send(200, "text/plain", "Microsoft Connect Test");
+  } else {
+    webServer.sendHeader("Location", "http://192.168.4.1/", true);
+    webServer.send(302, "text/plain", "");
+  }
+}
+
+// ==================== Network setup ====================
+
+void enableNapt() {
   LOCK_TCPIP_CORE();
   ip_napt_enable(apIP, 1);
   UNLOCK_TCPIP_CORE();
   Serial.println("NAPT enabled");
+}
 
+void enableForwarding() {
+  esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
   esp_netif_dns_info_t dns_info;
   esp_netif_get_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_info);
-  Serial.print("Upstream DNS: ");
-  Serial.println(IPAddress(dns_info.ip.u_addr.ip4.addr));
-
-  esp_netif_dhcps_stop(ap_netif);
-  esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_info);
-  dhcps_offer_t dhcps_flag = OFFER_DNS;
-  esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
-    ESP_NETIF_DOMAIN_NAME_SERVER, &dhcps_flag, sizeof(dhcps_flag));
-  esp_netif_dhcps_start(ap_netif);
-  Serial.println("DHCP configured with upstream DNS");
+  upstreamDns = IPAddress(dns_info.ip.u_addr.ip4.addr);
+  dnsOut.begin(5353);
+  memset(pending, 0, sizeof(pending));
+  Serial.printf("DNS forwarding -> %s\n", upstreamDns.toString().c_str());
 }
+
+// ==================== Unified DNS handler ====================
+
+void processDns() {
+  // Incoming client query on port 53
+  int pktSize = dnsSocket.parsePacket();
+  if (pktSize > 0 && pktSize <= 512) {
+    uint8_t buf[512];
+    int len = dnsSocket.read(buf, sizeof(buf));
+    if (len < 12) return;
+
+    IPAddress clientIP = dnsSocket.remoteIP();
+    uint16_t clientPort = dnsSocket.remotePort();
+    uint16_t txnId = (buf[0] << 8) | buf[1];
+
+    if (!internetMode) {
+      // Captive: respond with AP IP for every query
+      buf[2] = 0x81; buf[3] = 0x80;
+      buf[6] = 0x00; buf[7] = 0x01;
+      buf[8] = 0; buf[9] = 0;
+      buf[10] = 0; buf[11] = 0;
+
+      // Skip past QNAME + QTYPE + QCLASS
+      int pos = 12;
+      while (pos < len && buf[pos] != 0) pos += buf[pos] + 1;
+      pos += 5;
+
+      uint8_t answer[] = {
+        0xC0, 0x0C,
+        0x00, 0x01,
+        0x00, 0x01,
+        0x00, 0x00, 0x00, 0x3C,
+        0x00, 0x04,
+        apIP[0], apIP[1], apIP[2], apIP[3]
+      };
+      if (pos + (int)sizeof(answer) <= 512) {
+        memcpy(buf + pos, answer, sizeof(answer));
+        dnsSocket.beginPacket(clientIP, clientPort);
+        dnsSocket.write(buf, pos + sizeof(answer));
+        dnsSocket.endPacket();
+      }
+    } else {
+      // Internet: forward to upstream DNS
+      int slot = -1;
+      for (int i = 0; i < MAX_PENDING; i++) {
+        if (!pending[i].active || millis() - pending[i].sentAt > 3000) {
+          slot = i; break;
+        }
+      }
+      if (slot >= 0) {
+        pending[slot] = { clientIP, clientPort, txnId, millis(), true };
+        dnsOut.beginPacket(upstreamDns, 53);
+        dnsOut.write(buf, len);
+        dnsOut.endPacket();
+        Serial.printf("DNS Q %04X fwd\n", txnId);
+      }
+    }
+  }
+
+  // Upstream DNS response (internet mode only)
+  if (internetMode) {
+    pktSize = dnsOut.parsePacket();
+    if (pktSize > 0 && pktSize <= 512) {
+      uint8_t buf[512];
+      int len = dnsOut.read(buf, sizeof(buf));
+      if (len >= 2) {
+        uint16_t txnId = (buf[0] << 8) | buf[1];
+        for (int i = 0; i < MAX_PENDING; i++) {
+          if (pending[i].active && pending[i].txnId == txnId) {
+            dnsSocket.beginPacket(pending[i].clientIP, pending[i].clientPort);
+            dnsSocket.write(buf, len);
+            dnsSocket.endPacket();
+            pending[i].active = false;
+            Serial.printf("DNS R %04X ok\n", txnId);
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ==================== Internet button ====================
 
 void handleEnableInternet() {
   if (internetMode) {
     webServer.send(200, "text/html", buildPage(SUCCESS_HTML));
     return;
   }
-
   if (!staConnected) {
     webServer.send(200, "text/html", buildPage(FAIL_HTML));
     return;
   }
 
-  // Everything heavy was done at boot — just stop DNS hijacking
-  captiveDns.stop();
+  enableForwarding();
   internetMode = true;
-  Serial.println("Internet mode: captive DNS stopped");
+  Serial.println("Internet mode enabled");
   webServer.send(200, "text/html", buildPage(SUCCESS_HTML));
 }
+
+// ==================== OLED ====================
 
 void updateDisplay() {
   int clients = WiFi.softAPgetStationNum();
   u8g2.clearBuffer();
-
   u8g2.setFont(u8g2_font_ncenB10_tr);
   u8g2.drawStr(2, 14, "humn");
-
   u8g2.setFont(u8g2_font_6x10_tr);
   char buf[24];
   if (internetMode) {
@@ -207,6 +316,8 @@ void updateDisplay() {
   u8g2.drawStr(2, 34, buf);
   u8g2.sendBuffer();
 }
+
+// ==================== Setup & Loop ====================
 
 void setup() {
   Serial.begin(115200);
@@ -225,14 +336,12 @@ void setup() {
   u8g2.drawStr(2, 34, "WiFi...");
   u8g2.sendBuffer();
 
-  // AP+STA from boot
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   WiFi.softAP(AP_SSID, AP_PASS);
   Serial.print("AP started: ");
   Serial.println(AP_SSID);
 
-  // Connect to upstream before clients join
   WiFi.begin(STA_SSID, STA_PASS);
   WiFi.setAutoReconnect(true);
   Serial.print("Connecting to ");
@@ -256,20 +365,19 @@ void setup() {
     staConnected = true;
     Serial.print("STA connected, IP: ");
     Serial.println(WiFi.localIP());
-    setupNaptAndDhcp();
+    enableNapt();
   } else {
     Serial.print("STA failed, status=");
     Serial.println(WiFi.status());
   }
 
-  // Captive DNS — hijacks all domains until Internet button is pressed
-  captiveDns.start(53, "*", apIP);
-  Serial.println("Captive DNS started");
+  // Single DNS socket on port 53 — handles captive AND forwarding
+  dnsSocket.begin(53);
+  Serial.println("DNS listening on :53");
 
-  // Web server
-  webServer.on("/generate_204", handleRedirect);
-  webServer.on("/connecttest.txt", handleRedirect);
-  webServer.on("/hotspot-detect.html", handleRedirect);
+  webServer.on("/hotspot-detect.html", handleAppleDetect);
+  webServer.on("/generate_204", handleAndroidDetect);
+  webServer.on("/connecttest.txt", handleWindowsDetect);
   webServer.on("/internet", handleEnableInternet);
   webServer.on("/", handlePortal);
   webServer.onNotFound(handlePortal);
@@ -282,10 +390,7 @@ void setup() {
 }
 
 void loop() {
-  if (!internetMode) {
-    captiveDns.processNextRequest();
-  }
-
+  processDns();
   webServer.handleClient();
 
   if (!staConnected && WiFi.status() == WL_CONNECTED) {
