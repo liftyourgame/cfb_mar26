@@ -8,3 +8,6 @@ ota_base_fw/build_c3/
 # Sketch build artifacts (keep .bin files)
 sketches/**/*.elf
 sketches/**/*.map
+
+# Secrets (WiFi credentials etc.)
+secrets.h

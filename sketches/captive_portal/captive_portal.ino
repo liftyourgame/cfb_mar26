@@ -6,14 +6,7 @@
 #include "lwip/lwip_napt.h"
 #include "lwip/tcpip.h"
 #include "esp_netif.h"
-
-// ----- AP credentials -----
-const char* AP_SSID = "humn.au";
-const char* AP_PASS = "LivingTheDream";
-
-// ----- Upstream WiFi (internet source) -----
-const char* STA_SSID = "Humanising Technologies";
-const char* STA_PASS = "turner73";
+#include "secrets.h"
 
 // ----- Hardware -----
 #define LED_PIN 8
@@ -23,16 +16,35 @@ U8G2_SSD1306_72X40_ER_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 6, 5);
 WebServer webServer(80);
 const IPAddress apIP(192, 168, 4, 1);
 
-// ----- State -----
-bool internetMode = false;
+// ----- Per-device authorization -----
+#define MAX_AUTHORIZED 8
+IPAddress authorizedIPs[MAX_AUTHORIZED];
+int numAuthorized = 0;
+bool forwarderStarted = false;
 bool staConnected = false;
 
-// ----- Unified DNS on port 53: captive replies OR upstream forwarding -----
-WiFiUDP dnsSocket;  // port 53 — never rebound
-WiFiUDP dnsOut;     // ephemeral — upstream forwarding only
+bool isAuthorized(IPAddress ip) {
+  for (int i = 0; i < numAuthorized; i++) {
+    if (authorizedIPs[i] == ip) return true;
+  }
+  return false;
+}
+
+bool authorizeClient(IPAddress ip) {
+  if (isAuthorized(ip)) return true;
+  if (numAuthorized >= MAX_AUTHORIZED) return false;
+  authorizedIPs[numAuthorized++] = ip;
+  Serial.printf("Authorized: %s (%d/%d)\n",
+    ip.toString().c_str(), numAuthorized, MAX_AUTHORIZED);
+  return true;
+}
+
+// ----- Unified DNS on port 53 -----
+WiFiUDP dnsSocket;
+WiFiUDP dnsOut;
 IPAddress upstreamDns;
 
-#define MAX_PENDING 4
+#define MAX_PENDING 16
 struct PendingQuery {
   IPAddress clientIP;
   uint16_t clientPort;
@@ -43,7 +55,7 @@ struct PendingQuery {
 
 // ----- Display refresh -----
 unsigned long lastDisplayUpdate = 0;
-const unsigned long DISPLAY_INTERVAL = 2000;
+const unsigned long DISPLAY_INTERVAL = 5000;
 
 // ----- Shared CSS -----
 const char SHARED_CSS[] PROGMEM = R"rawliteral(
@@ -148,12 +160,14 @@ String buildPage(const char* tpl) {
   return page;
 }
 
+// ==================== Web handlers (per-client checks) ====================
+
 void handlePortal() {
   webServer.send(200, "text/html", buildPage(PORTAL_HTML));
 }
 
 void handleAppleDetect() {
-  if (internetMode) {
+  if (isAuthorized(webServer.client().remoteIP())) {
     webServer.send(200, "text/html",
       "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
   } else {
@@ -162,7 +176,7 @@ void handleAppleDetect() {
 }
 
 void handleAndroidDetect() {
-  if (internetMode) {
+  if (isAuthorized(webServer.client().remoteIP())) {
     webServer.send(204, "", "");
   } else {
     webServer.sendHeader("Location", "http://192.168.4.1/", true);
@@ -171,7 +185,7 @@ void handleAndroidDetect() {
 }
 
 void handleWindowsDetect() {
-  if (internetMode) {
+  if (isAuthorized(webServer.client().remoteIP())) {
     webServer.send(200, "text/plain", "Microsoft Connect Test");
   } else {
     webServer.sendHeader("Location", "http://192.168.4.1/", true);
@@ -188,38 +202,40 @@ void enableNapt() {
   Serial.println("NAPT enabled");
 }
 
-void enableForwarding() {
+void ensureForwarderStarted() {
+  if (forwarderStarted) return;
   esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
   esp_netif_dns_info_t dns_info;
   esp_netif_get_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_info);
   upstreamDns = IPAddress(dns_info.ip.u_addr.ip4.addr);
   dnsOut.begin(5353);
   memset(pending, 0, sizeof(pending));
+  forwarderStarted = true;
   Serial.printf("DNS forwarding -> %s\n", upstreamDns.toString().c_str());
 }
 
-// ==================== Unified DNS handler ====================
+// ==================== Unified DNS handler (per-client) ====================
 
 void processDns() {
-  // Incoming client query on port 53
-  int pktSize = dnsSocket.parsePacket();
-  if (pktSize > 0 && pktSize <= 512) {
+  // Process up to 8 client queries per call to keep up with burst traffic
+  for (int q = 0; q < 8; q++) {
+    int pktSize = dnsSocket.parsePacket();
+    if (pktSize <= 0 || pktSize > 512) break;
+
     uint8_t buf[512];
     int len = dnsSocket.read(buf, sizeof(buf));
-    if (len < 12) return;
+    if (len < 12) continue;
 
     IPAddress clientIP = dnsSocket.remoteIP();
     uint16_t clientPort = dnsSocket.remotePort();
     uint16_t txnId = (buf[0] << 8) | buf[1];
 
-    if (!internetMode) {
-      // Captive: respond with AP IP for every query
+    if (!isAuthorized(clientIP)) {
       buf[2] = 0x81; buf[3] = 0x80;
       buf[6] = 0x00; buf[7] = 0x01;
       buf[8] = 0; buf[9] = 0;
       buf[10] = 0; buf[11] = 0;
 
-      // Skip past QNAME + QTYPE + QCLASS
       int pos = 12;
       while (pos < len && buf[pos] != 0) pos += buf[pos] + 1;
       pos += 5;
@@ -239,7 +255,6 @@ void processDns() {
         dnsSocket.endPacket();
       }
     } else {
-      // Internet: forward to upstream DNS
       int slot = -1;
       for (int i = 0; i < MAX_PENDING; i++) {
         if (!pending[i].active || millis() - pending[i].sentAt > 3000) {
@@ -251,38 +266,40 @@ void processDns() {
         dnsOut.beginPacket(upstreamDns, 53);
         dnsOut.write(buf, len);
         dnsOut.endPacket();
-        Serial.printf("DNS Q %04X fwd\n", txnId);
       }
     }
   }
 
-  // Upstream DNS response (internet mode only)
-  if (internetMode) {
-    pktSize = dnsOut.parsePacket();
-    if (pktSize > 0 && pktSize <= 512) {
+  // Process up to 8 upstream responses per call
+  if (forwarderStarted) {
+    for (int r = 0; r < 8; r++) {
+      int pktSize = dnsOut.parsePacket();
+      if (pktSize <= 0 || pktSize > 512) break;
+
       uint8_t buf[512];
       int len = dnsOut.read(buf, sizeof(buf));
-      if (len >= 2) {
-        uint16_t txnId = (buf[0] << 8) | buf[1];
-        for (int i = 0; i < MAX_PENDING; i++) {
-          if (pending[i].active && pending[i].txnId == txnId) {
-            dnsSocket.beginPacket(pending[i].clientIP, pending[i].clientPort);
-            dnsSocket.write(buf, len);
-            dnsSocket.endPacket();
-            pending[i].active = false;
-            Serial.printf("DNS R %04X ok\n", txnId);
-            break;
-          }
+      if (len < 2) continue;
+
+      uint16_t txnId = (buf[0] << 8) | buf[1];
+      for (int i = 0; i < MAX_PENDING; i++) {
+        if (pending[i].active && pending[i].txnId == txnId) {
+          dnsSocket.beginPacket(pending[i].clientIP, pending[i].clientPort);
+          dnsSocket.write(buf, len);
+          dnsSocket.endPacket();
+          pending[i].active = false;
+          break;
         }
       }
     }
   }
 }
 
-// ==================== Internet button ====================
+// ==================== Internet button (per-client) ====================
 
 void handleEnableInternet() {
-  if (internetMode) {
+  IPAddress clientIP = webServer.client().remoteIP();
+
+  if (isAuthorized(clientIP)) {
     webServer.send(200, "text/html", buildPage(SUCCESS_HTML));
     return;
   }
@@ -291,9 +308,8 @@ void handleEnableInternet() {
     return;
   }
 
-  enableForwarding();
-  internetMode = true;
-  Serial.println("Internet mode enabled");
+  ensureForwarderStarted();
+  authorizeClient(clientIP);
   webServer.send(200, "text/html", buildPage(SUCCESS_HTML));
 }
 
@@ -306,10 +322,8 @@ void updateDisplay() {
   u8g2.drawStr(2, 14, "humn.au");
   u8g2.setFont(u8g2_font_6x10_tr);
   char buf[24];
-  if (internetMode) {
-    snprintf(buf, sizeof(buf), "NET  Cli:%d", clients);
-  } else if (staConnected) {
-    snprintf(buf, sizeof(buf), "RDY  Cli:%d", clients);
+  if (staConnected) {
+    snprintf(buf, sizeof(buf), "%d/%d  Cli:%d", numAuthorized, clients, clients);
   } else {
     snprintf(buf, sizeof(buf), "AP   Cli:%d", clients);
   }
@@ -371,7 +385,6 @@ void setup() {
     Serial.println(WiFi.status());
   }
 
-  // Single DNS socket on port 53 — handles captive AND forwarding
   dnsSocket.begin(53);
   Serial.println("DNS listening on :53");
 
