@@ -10,7 +10,7 @@
 #include "secrets.h"
 
 // ----- Hardware -----
-#define LED_PIN 8
+#define LED_PIN 8   // Blue LED (active-low)
 U8G2_SSD1306_72X40_ER_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 6, 5);
 
 // ----- Servers -----
@@ -66,8 +66,10 @@ unsigned long lastDisplayUpdate = 0;
 const unsigned long DISPLAY_INTERVAL = 5000;
 
 // ----- LED blink (non-blocking) -----
+// Patterns: fast=no WiFi, slow=WiFi+BLE advertising, solid=BLE connected
 unsigned long lastLedToggle = 0;
-const unsigned long LED_BLINK_INTERVAL = 500;
+const unsigned long LED_FAST = 250;   // no upstream WiFi
+const unsigned long LED_SLOW = 800;   // WiFi ok, BLE advertising
 
 // ----- BLE log monitor -----
 #define BLE_LOG_SERVICE_UUID   "91bad492-b950-4226-aa2b-4ede9fa42f59"
@@ -465,11 +467,25 @@ void loop() {
 
   if (!staConnected && WiFi.status() == WL_CONNECTED) {
     staConnected = true;
+    lastLedToggle = 0;
+    enableNapt(); // re-enable NAT after reconnection
     bleLogf("STA reconnected, IP: %s", WiFi.localIP().toString().c_str());
   }
   if (staConnected && WiFi.status() != WL_CONNECTED) {
     staConnected = false;
+    lastLedToggle = 0;
     bleLog("STA disconnected");
+  }
+
+  // Actively retry WiFi if disconnected — autoReconnect alone isn't reliable
+  // after the upstream AP fully disappears and comes back
+  {
+    static unsigned long lastReconnectAttempt = 0;
+    if (!staConnected && millis() - lastReconnectAttempt > 10000) {
+      lastReconnectAttempt = millis();
+      bleLog("Retrying WiFi...");
+      WiFi.reconnect();
+    }
   }
 
   // Re-advertise BLE after disconnect
@@ -481,12 +497,18 @@ void loop() {
     prevBleConn = bleClientConnected;
   }
 
-  // LED: flash while advertising, solid when BLE client connected (active-low)
+  // Blue LED (GPIO8, active-low):
+  //   solid           = BLE client connected
+  //   slow flash      = WiFi up, BLE advertising
+  //   fast flash      = no upstream WiFi
   if (bleClientConnected) {
     digitalWrite(LED_PIN, LOW);
-  } else if (millis() - lastLedToggle > LED_BLINK_INTERVAL) {
-    lastLedToggle = millis();
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+  } else {
+    unsigned long interval = staConnected ? LED_SLOW : LED_FAST;
+    if (millis() - lastLedToggle > interval) {
+      lastLedToggle = millis();
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    }
   }
 
   if (millis() - lastDisplayUpdate > DISPLAY_INTERVAL) {
