@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "humn log",
+    "slug": "humn-log",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.haecceity.humnlog",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect to the ESP32 device and stream live log messages.",
+        "NSBluetoothPeripheralUsageDescription": "This app uses Bluetooth to connect to the ESP32 device and stream live log messages."
+      }
+    },
+    "plugins": [
+      "expo-dev-client",
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["central"]
+        }
+      ]
+    ]
+  }
+}

@@ -65,6 +65,10 @@ struct PendingQuery {
 unsigned long lastDisplayUpdate = 0;
 const unsigned long DISPLAY_INTERVAL = 5000;
 
+// ----- LED blink (non-blocking) -----
+unsigned long lastLedToggle = 0;
+const unsigned long LED_BLINK_INTERVAL = 500;
+
 // ----- BLE log monitor -----
 #define BLE_LOG_SERVICE_UUID   "91bad492-b950-4226-aa2b-4ede9fa42f59"
 #define BLE_LOG_CHAR_UUID      "ca73b3ba-39f6-4ab3-91ae-186dc9577d99"
@@ -88,6 +92,10 @@ void bleLog(const char* msg) {
     bleLogChar->setValue((const uint8_t*)(msg + off), n);
     bleLogChar->notify();
   }
+  // Send newline terminator so the mobile app knows the message is complete
+  const uint8_t newline = '\n';
+  bleLogChar->setValue(&newline, 1);
+  bleLogChar->notify();
 }
 
 char _bleBuf[128];
@@ -445,7 +453,8 @@ void setup() {
   bleAdv->start();
   Serial.println("BLE log advertising as \"humn.au-log\"");
 
-  digitalWrite(LED_PIN, HIGH);
+  // LED starts flashing — solid once a BLE client connects
+  digitalWrite(LED_PIN, LOW);
   updateDisplay();
   bleLog("Ready!");
 }
@@ -470,6 +479,14 @@ void loop() {
       NimBLEDevice::getAdvertising()->start();
     }
     prevBleConn = bleClientConnected;
+  }
+
+  // LED: flash while advertising, solid when BLE client connected (active-low)
+  if (bleClientConnected) {
+    digitalWrite(LED_PIN, LOW);
+  } else if (millis() - lastLedToggle > LED_BLINK_INTERVAL) {
+    lastLedToggle = millis();
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
   }
 
   if (millis() - lastDisplayUpdate > DISPLAY_INTERVAL) {

@@ -11,3 +11,7 @@ sketches/**/*.map
 
 # Secrets (WiFi credentials etc.)
 secrets.h
+
+# Mobile app
+mobile-app/node_modules/
+mobile-app/.expo/
