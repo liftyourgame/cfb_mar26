@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <NimBLEDevice.h>
 #include "lwip/lwip_napt.h"
 #include "lwip/tcpip.h"
 #include "esp_netif.h"
@@ -15,6 +16,14 @@ U8G2_SSD1306_72X40_ER_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 6, 5);
 // ----- Servers -----
 WebServer webServer(80);
 const IPAddress apIP(192, 168, 4, 1);
+
+// Forward declarations for BLE logging
+void bleLog(const char* msg);
+extern char _bleBuf[128];
+#define bleLogf(fmt, ...) do { \
+  snprintf(_bleBuf, sizeof(_bleBuf), fmt, ##__VA_ARGS__); \
+  bleLog(_bleBuf); \
+} while(0)
 
 // ----- Per-device authorization -----
 #define MAX_AUTHORIZED 8
@@ -34,8 +43,7 @@ bool authorizeClient(IPAddress ip) {
   if (isAuthorized(ip)) return true;
   if (numAuthorized >= MAX_AUTHORIZED) return false;
   authorizedIPs[numAuthorized++] = ip;
-  Serial.printf("Authorized: %s (%d/%d)\n",
-    ip.toString().c_str(), numAuthorized, MAX_AUTHORIZED);
+  bleLogf("Authorized: %s (%d/%d)", ip.toString().c_str(), numAuthorized, MAX_AUTHORIZED);
   return true;
 }
 
@@ -56,6 +64,33 @@ struct PendingQuery {
 // ----- Display refresh -----
 unsigned long lastDisplayUpdate = 0;
 const unsigned long DISPLAY_INTERVAL = 5000;
+
+// ----- BLE log monitor -----
+#define BLE_LOG_SERVICE_UUID   "91bad492-b950-4226-aa2b-4ede9fa42f59"
+#define BLE_LOG_CHAR_UUID      "ca73b3ba-39f6-4ab3-91ae-186dc9577d99"
+NimBLEServer*         bleServer  = nullptr;
+NimBLECharacteristic* bleLogChar = nullptr;
+bool bleClientConnected = false;
+
+class BleLogServerCB : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* s, NimBLEConnInfo& ci) override  { bleClientConnected = true;  }
+  void onDisconnect(NimBLEServer* s, NimBLEConnInfo& ci, int r) override { bleClientConnected = false; }
+};
+
+// Writes to both Serial and BLE notify (chunks > 20 bytes for BLE MTU)
+void bleLog(const char* msg) {
+  Serial.println(msg);
+  if (!bleClientConnected) return;
+  size_t len = strlen(msg);
+  const size_t chunk = 20;
+  for (size_t off = 0; off < len; off += chunk) {
+    size_t n = (len - off > chunk) ? chunk : len - off;
+    bleLogChar->setValue((const uint8_t*)(msg + off), n);
+    bleLogChar->notify();
+  }
+}
+
+char _bleBuf[128];
 
 // ----- Shared CSS -----
 const char SHARED_CSS[] PROGMEM = R"rawliteral(
@@ -199,7 +234,7 @@ void enableNapt() {
   LOCK_TCPIP_CORE();
   ip_napt_enable(apIP, 1);
   UNLOCK_TCPIP_CORE();
-  Serial.println("NAPT enabled");
+  bleLog("NAPT enabled");
 }
 
 void ensureForwarderStarted() {
@@ -211,7 +246,7 @@ void ensureForwarderStarted() {
   dnsOut.begin(5353);
   memset(pending, 0, sizeof(pending));
   forwarderStarted = true;
-  Serial.printf("DNS forwarding -> %s\n", upstreamDns.toString().c_str());
+  bleLogf("DNS forwarding -> %s", upstreamDns.toString().c_str());
 }
 
 // ==================== Unified DNS handler (per-client) ====================
@@ -353,13 +388,11 @@ void setup() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   WiFi.softAP(AP_SSID, AP_PASS);
-  Serial.print("AP started: ");
-  Serial.println(AP_SSID);
+  Serial.printf("AP started: %s\n", AP_SSID);
 
   WiFi.begin(STA_SSID, STA_PASS);
   WiFi.setAutoReconnect(true);
-  Serial.print("Connecting to ");
-  Serial.println(STA_SSID);
+  Serial.printf("Connecting to %s\n", STA_SSID);
 
   unsigned long start = millis();
   int attempt = 0;
@@ -377,12 +410,10 @@ void setup() {
 
   if (WiFi.status() == WL_CONNECTED) {
     staConnected = true;
-    Serial.print("STA connected, IP: ");
-    Serial.println(WiFi.localIP());
+    Serial.printf("STA connected, IP: %s\n", WiFi.localIP().toString().c_str());
     enableNapt();
   } else {
-    Serial.print("STA failed, status=");
-    Serial.println(WiFi.status());
+    Serial.printf("STA failed, status=%d\n", WiFi.status());
   }
 
   dnsSocket.begin(53);
@@ -397,9 +428,26 @@ void setup() {
   webServer.begin();
   Serial.println("Web server started");
 
+  // ----- BLE log monitor init -----
+  NimBLEDevice::init("humn.au-log");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  bleServer = NimBLEDevice::createServer();
+  bleServer->setCallbacks(new BleLogServerCB());
+  NimBLEService* bleSvc = bleServer->createService(BLE_LOG_SERVICE_UUID);
+  bleLogChar = bleSvc->createCharacteristic(
+    BLE_LOG_CHAR_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+  );
+  bleSvc->start();
+  NimBLEAdvertising* bleAdv = NimBLEDevice::getAdvertising();
+  bleAdv->addServiceUUID(BLE_LOG_SERVICE_UUID);
+  bleAdv->setName("humn.au-log");
+  bleAdv->start();
+  Serial.println("BLE log advertising as \"humn.au-log\"");
+
   digitalWrite(LED_PIN, HIGH);
   updateDisplay();
-  Serial.println("Ready!");
+  bleLog("Ready!");
 }
 
 void loop() {
@@ -408,12 +456,20 @@ void loop() {
 
   if (!staConnected && WiFi.status() == WL_CONNECTED) {
     staConnected = true;
-    Serial.print("STA reconnected, IP: ");
-    Serial.println(WiFi.localIP());
+    bleLogf("STA reconnected, IP: %s", WiFi.localIP().toString().c_str());
   }
   if (staConnected && WiFi.status() != WL_CONNECTED) {
     staConnected = false;
-    Serial.println("STA disconnected");
+    bleLog("STA disconnected");
+  }
+
+  // Re-advertise BLE after disconnect
+  {
+    static bool prevBleConn = false;
+    if (!bleClientConnected && prevBleConn) {
+      NimBLEDevice::getAdvertising()->start();
+    }
+    prevBleConn = bleClientConnected;
   }
 
   if (millis() - lastDisplayUpdate > DISPLAY_INTERVAL) {
