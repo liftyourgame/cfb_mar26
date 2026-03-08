@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <WebServer.h>
+#include <LittleFS.h>
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <NimBLEDevice.h>
@@ -107,23 +108,29 @@ const char SHARED_CSS[] PROGMEM = R"rawliteral(
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #0a0a0a; color: #e0e0e0;
+  background: #0a0a0a url('/bg.gif') center center / cover no-repeat fixed;
+  color: #e0e0e0;
   display: flex; justify-content: center; align-items: center;
   min-height: 100vh; text-align: center;
 }
-.container { padding: 2rem; max-width: 400px; }
+.container {
+  padding: 2rem; max-width: 400px;
+  background: rgba(0,0,0,0.72);
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
 h1 { font-size: 2.5rem; font-weight: 300; letter-spacing: 0.15em; color: #fff; }
 .divider { width: 60px; height: 2px; background: #444; margin: 1.5rem auto; }
-p { font-size: 1.1rem; line-height: 1.6; color: #888; font-weight: 300; margin-bottom: 2rem; }
+p { font-size: 1.1rem; line-height: 1.6; color: #aaa; font-weight: 300; margin-bottom: 2rem; }
 button {
-  background: #222; color: #fff;
-  border: 1px solid #444; padding: 0.8rem 2.5rem;
+  background: rgba(255,255,255,0.08); color: #fff;
+  border: 1px solid rgba(255,255,255,0.2); padding: 0.8rem 2.5rem;
   font-size: 1rem; border-radius: 8px;
   cursor: pointer; transition: all 0.2s;
   -webkit-appearance: none;
 }
-button:hover { background: #333; border-color: #666; }
-button:active { background: #444; }
+button:hover { background: rgba(255,255,255,0.15); }
+button:active { background: rgba(255,255,255,0.22); }
 .ok { border-color: #4a4 !important; }
 .status { margin-top: 1rem; font-size: 0.9rem; }
 .green { color: #4a4; }
@@ -339,6 +346,18 @@ void processDns() {
   }
 }
 
+// ==================== Static file handler ====================
+
+void handleBgGif() {
+  File f = LittleFS.open("/bg.gif", "r");
+  if (!f) {
+    webServer.send(404, "text/plain", "bg.gif not found");
+    return;
+  }
+  webServer.streamFile(f, "image/gif");
+  f.close();
+}
+
 // ==================== Internet button (per-client) ====================
 
 void handleEnableInternet() {
@@ -386,6 +405,12 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS mount failed");
+  } else {
+    Serial.println("LittleFS mounted");
+  }
+
   Wire.begin(5, 6);
   u8g2.begin();
   u8g2.setContrast(30);
@@ -429,6 +454,7 @@ void setup() {
   dnsSocket.begin(53);
   Serial.println("DNS listening on :53");
 
+  webServer.on("/bg.gif", handleBgGif);
   webServer.on("/hotspot-detect.html", handleAppleDetect);
   webServer.on("/generate_204", handleAndroidDetect);
   webServer.on("/connecttest.txt", handleWindowsDetect);
