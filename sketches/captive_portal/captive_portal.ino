@@ -108,34 +108,31 @@ const char SHARED_CSS[] PROGMEM = R"rawliteral(
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #0a0a0a url('/bg.gif') center center / cover no-repeat fixed;
-  color: #e0e0e0;
-  display: flex; justify-content: center; align-items: center;
-  min-height: 100vh; text-align: center;
+  background: #0a0a0a url('/bg.gif') center center / cover no-repeat;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 3rem 2rem 2.5rem;
 }
-.container {
-  padding: 2rem; max-width: 400px;
-  background: rgba(0,0,0,0.72);
-  border-radius: 16px;
-  border: 1px solid rgba(255,255,255,0.08);
+h1 {
+  font-size: 3rem; font-weight: 300; letter-spacing: 0.2em; color: #fff;
+  text-shadow: 0 2px 20px rgba(0,0,0,0.9);
 }
-h1 { font-size: 2.5rem; font-weight: 300; letter-spacing: 0.15em; color: #fff; }
-.divider { width: 60px; height: 2px; background: #444; margin: 1.5rem auto; }
-p { font-size: 1.1rem; line-height: 1.6; color: #aaa; font-weight: 300; margin-bottom: 2rem; }
+.bottom { text-align: center; }
 button {
-  background: rgba(255,255,255,0.08); color: #fff;
-  border: 1px solid rgba(255,255,255,0.2); padding: 0.8rem 2.5rem;
-  font-size: 1rem; border-radius: 8px;
-  cursor: pointer; transition: all 0.2s;
-  -webkit-appearance: none;
+  width: 100%; padding: 1rem;
+  background: rgba(0,0,0,0.55); color: #fff;
+  border: 1px solid rgba(255,255,255,0.3);
+  font-size: 1.1rem; border-radius: 12px;
+  cursor: pointer; -webkit-appearance: none;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
 }
-button:hover { background: rgba(255,255,255,0.15); }
-button:active { background: rgba(255,255,255,0.22); }
-.ok { border-color: #4a4 !important; }
-.status { margin-top: 1rem; font-size: 0.9rem; }
-.green { color: #4a4; }
-.red { color: #a44; }
-.hint { margin-top: 2rem; color: #555; font-size: 0.8rem; }
+button:active { background: rgba(0,0,0,0.75); }
+.ok { border-color: #4a4; color: #4a4; }
+.status { margin-top: 1rem; font-size: 0.95rem; text-shadow: 0 1px 6px rgba(0,0,0,0.9); }
+.green { color: #6d6; }
+.red { color: #e66; }
 )rawliteral";
 
 const char PORTAL_HTML[] PROGMEM = R"rawliteral(
@@ -148,16 +145,11 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
   <style>%CSS%</style>
 </head>
 <body>
-  <div class="container">
-    <h1>humn</h1>
-    <div class="divider"></div>
-    <p>Welcome to the network.</p>
+  <h1>humn</h1>
+  <div class="bottom">
     <form action="/internet" method="get">
       <button type="submit">Internet</button>
     </form>
-    <div class="hint">
-      If button doesn't work, open your<br>browser and go to <b>192.168.4.1</b>
-    </div>
   </div>
 </body>
 </html>
@@ -173,10 +165,8 @@ const char SUCCESS_HTML[] PROGMEM = R"rawliteral(
   <style>%CSS%</style>
 </head>
 <body>
-  <div class="container">
-    <h1>humn</h1>
-    <div class="divider"></div>
-    <p>Internet is now available.</p>
+  <h1>humn</h1>
+  <div class="bottom">
     <button class="ok" disabled>&#10003; Connected</button>
     <div class="status green">You can now browse the internet.</div>
   </div>
@@ -194,11 +184,9 @@ const char FAIL_HTML[] PROGMEM = R"rawliteral(
   <style>%CSS%</style>
 </head>
 <body>
-  <div class="container">
-    <h1>humn</h1>
-    <div class="divider"></div>
-    <p>Internet is not available.</p>
-    <form action="/" method="get"><button type="submit">Back</button></form>
+  <h1>humn</h1>
+  <div class="bottom">
+    <form action="/" method="get"><button type="submit">Try Again</button></form>
     <div class="status red">Upstream network not connected.</div>
   </div>
 </body>
@@ -354,6 +342,9 @@ void handleBgGif() {
     webServer.send(404, "text/plain", "bg.gif not found");
     return;
   }
+  // Cache for 1 hour so the browser doesn't re-download 824KB on every page
+  webServer.sendHeader("Cache-Control", "public, max-age=3600");
+  webServer.sendHeader("ETag", "\"bg1\"");
   webServer.streamFile(f, "image/gif");
   f.close();
 }
