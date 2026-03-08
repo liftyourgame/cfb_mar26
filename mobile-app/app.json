@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "humn log",
+    "name": "humnlog",
     "slug": "humn-log",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -17,7 +17,8 @@
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect to the ESP32 device and stream live log messages.",
         "NSBluetoothPeripheralUsageDescription": "This app uses Bluetooth to connect to the ESP32 device and stream live log messages."
-      }
+      },
+      "appleTeamId": "2TWH38P624"
     },
     "plugins": [
       "expo-dev-client",
@@ -25,7 +26,9 @@
         "react-native-ble-plx",
         {
           "isBackgroundEnabled": false,
-          "modes": ["central"]
+          "modes": [
+            "central"
+          ]
         }
       ]
     ]
