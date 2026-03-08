@@ -145,7 +145,7 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
   <style>%CSS%</style>
 </head>
 <body>
-  <h1>humn</h1>
+  <h1>humn.au</h1>
   <div class="bottom">
     <form action="/internet" method="get">
       <button type="submit">Internet</button>
@@ -165,7 +165,7 @@ const char SUCCESS_HTML[] PROGMEM = R"rawliteral(
   <style>%CSS%</style>
 </head>
 <body>
-  <h1>humn</h1>
+  <h1>humn.au</h1>
   <div class="bottom">
     <button class="ok" disabled>&#10003; Connected</button>
     <div class="status green">You can now browse the internet.</div>
@@ -184,7 +184,7 @@ const char FAIL_HTML[] PROGMEM = R"rawliteral(
   <style>%CSS%</style>
 </head>
 <body>
-  <h1>humn</h1>
+  <h1>humn.au</h1>
   <div class="bottom">
     <form action="/" method="get"><button type="submit">Try Again</button></form>
     <div class="status red">Upstream network not connected.</div>
